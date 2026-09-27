@@ -877,34 +877,20 @@ describe("config discovery", () => {
     ]);
   });
 
-  it("loads adapter and shared JSON config files with a UTF-8 BOM", async () => {
+  it("loads shared and imported JSON and TOML configs with a UTF-8 BOM", async () => {
     const home = mkdtempSync(join(tmpdir(), "pi-mcp-bom-json-home-"));
     const project = mkdtempSync(join(tmpdir(), "pi-mcp-bom-json-project-"));
     process.env.HOME = home;
     process.chdir(project);
 
-    writeText(join(home, ".pi", "agent", "mcp-adapter.json"), '\uFEFF{"mcpServers":{"global":{"command":"global-server"}}}');
     writeText(join(project, ".mcp.json"), '\uFEFF{"mcpServers":{"project":{"command":"project-server"}}}');
-
-    const { loadMcpConfig } = await import("../config.ts");
-    expect(loadMcpConfig().mcpServers).toMatchObject({
-      global: { command: "global-server" },
-      project: { command: "project-server" },
-    });
-  });
-
-  it("imports JSON and TOML host configs with a UTF-8 BOM", async () => {
-    const home = mkdtempSync(join(tmpdir(), "pi-mcp-bom-import-home-"));
-    const project = mkdtempSync(join(tmpdir(), "pi-mcp-bom-import-project-"));
-    process.env.HOME = home;
-    process.chdir(project);
-
     writeJson(join(home, ".pi", "agent", "mcp-adapter.json"), { imports: ["cursor", "codex"], mcpServers: {} });
     writeText(join(home, ".cursor", "mcp.json"), '\uFEFF{"mcpServers":{"cursor":{"command":"cursor-server"}}}');
     writeText(join(home, ".codex", "config.toml"), '\uFEFF[mcp_servers.codex]\ncommand = "codex-server"\n');
 
     const { loadMcpConfig } = await import("../config.ts");
     expect(loadMcpConfig().mcpServers).toMatchObject({
+      project: { command: "project-server" },
       cursor: { command: "cursor-server" },
       codex: { command: "codex-server" },
     });
@@ -1894,6 +1880,26 @@ describe("config discovery", () => {
     )).toThrow(`Failed to read MCP config at ${invalidPath}`);
     expect(readFileSync(validPath, "utf-8")).toBe(validContents);
     expect(readFileSync(invalidPath, "utf-8")).toBe("{ malformed");
+  });
+
+  it.skipIf(process.platform === "win32")("keeps direct-tools changes when two targets are the same file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-mcp-aliased-direct-tools-"));
+    const path = join(root, "real.json");
+    const alias = join(root, "alias.json");
+    writeText(path, '{"mcpServers":{"first":{"command":"first"},"second":{"command":"second"}}}\n');
+    symlinkSync(path, alias);
+    const { writeDirectToolsConfig } = await import("../config.ts");
+
+    writeDirectToolsConfig(
+      new Map([["first", true], ["second", true]]),
+      new Map([
+        ["first", { path, kind: "project" as const }],
+        ["second", { path: alias, kind: "project" as const }],
+      ]),
+      { mcpServers: { first: { command: "first" }, second: { command: "second" } } },
+    );
+    const { mcpServers } = JSON.parse(readFileSync(path, "utf-8"));
+    expect([mcpServers.first.directTools, mcpServers.second.directTools]).toEqual([true, true]);
   });
 
   it.each([
