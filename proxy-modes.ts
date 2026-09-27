@@ -23,6 +23,7 @@ import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
 import { semanticSearch, type SemanticSearchBackend, type SemanticSearchEvaluator } from "./semantic-search.ts";
 import { getInputRequiredNeedsUiDetails } from "./errors.ts";
 import { createJsonSchemaValidator } from "./json-schema-validator.ts";
+import { describeProjectServerBlock, disabledServerReason } from "./project-server-trust.ts";
 
 type ProxyToolResult = AgentToolResult<Record<string, unknown>>;
 type ClientCallToolResult = Awaited<ReturnType<Client["callTool"]>>;
@@ -209,8 +210,8 @@ function ambiguousServerToolResult(
   };
 }
 
-function disabledResult(mode: string, serverName: string): ProxyToolResult {
-  const message = `Server "${serverName}" is disabled. Run /mcp enable ${serverName} and /reload to enable it.`;
+function disabledResult(state: McpExtensionState, mode: string, serverName: string): ProxyToolResult {
+  const message = `Server "${serverName}" is ${disabledServerReason(state.blockedProjectServers, serverName)}`;
   return {
     content: [{ type: "text" as const, text: message }],
     details: { mode, error: "server_disabled", server: serverName, message },
@@ -501,15 +502,16 @@ export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
 }
 
 export function executeStatus(state: McpExtensionState): ProxyToolResult {
-  const servers: Array<{ name: string; status: string; listenState: string; catalogStale?: boolean; toolCount: number; failedAgo: number | null; disabled?: boolean }> = [];
+  const servers: Array<{ name: string; status: string; listenState: string; catalogStale?: boolean; toolCount: number; failedAgo: number | null; disabled?: boolean; blockedReason?: string }> = [];
 
   for (const name of Object.keys(state.config.mcpServers)) {
     const definition = state.config.mcpServers[name];
     const disabled = isServerDisabled(definition);
+    const block = state.blockedProjectServers?.get(name);
     const connection = disabled ? undefined : state.manager.getConnection(name);
     const metadata = disabled ? undefined : state.toolMetadata.get(name);
     const failedAgo = disabled ? null : getFailureAgeSeconds(state, name);
-    let status = disabled ? "disabled" : "not connected";
+    let status = block ? "blocked" : disabled ? "disabled" : "not connected";
     if (!disabled && connection?.status === "connected") {
       status = "connected";
     } else if (!disabled && connection?.status === "needs-auth") {
@@ -531,18 +533,25 @@ export function executeStatus(state: McpExtensionState): ProxyToolResult {
       toolCount,
       failedAgo,
       ...(disabled ? { disabled: true } : {}),
+      ...(block ? { blockedReason: describeProjectServerBlock(block.reason) } : {}),
     });
   }
 
-  const disabledCount = servers.filter(s => s.disabled).length;
+  const blockedCount = servers.filter(s => s.status === "blocked").length;
+  const disabledCount = servers.filter(s => s.disabled && s.status !== "blocked").length;
   const enabledServers = servers.filter(s => !s.disabled);
   const totalTools = enabledServers.reduce((sum, s) => sum + s.toolCount, 0);
   const connectedCount = enabledServers.filter(s => s.status === "connected").length;
 
   let text = `MCP: ${connectedCount}/${enabledServers.length} servers, ${totalTools} tools`;
+  if (blockedCount > 0) text += ` (${blockedCount} blocked)`;
   if (disabledCount > 0) text += ` (${disabledCount} disabled)`;
   text += "\n\n";
   for (const server of servers) {
+    if (server.status === "blocked") {
+      text += `⊘ ${server.name} (${server.blockedReason})\n`;
+      continue;
+    }
     if (server.disabled) {
       text += `⊘ ${server.name} (disabled)\n`;
       continue;
@@ -602,7 +611,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
       details: { mode: "auth-start", error: "not_found", server: serverName },
     };
   }
-  if (isServerDisabled(definition)) return disabledResult("auth-start", serverName);
+  if (isServerDisabled(definition)) return disabledResult(state, "auth-start", serverName);
 
   try {
     const serverUrl = resolveServerUrl(definition);
@@ -660,7 +669,7 @@ export async function executeAuthComplete(state: McpExtensionState, serverName: 
       details: { mode: "auth-complete", error: "not_found", server: serverName },
     };
   }
-  if (isServerDisabled(definition)) return disabledResult("auth-complete", serverName);
+  if (isServerDisabled(definition)) return disabledResult(state, "auth-complete", serverName);
 
   try {
     const status = state.authStorageOptions
@@ -708,7 +717,7 @@ export function executeDescribe(state: McpExtensionState, toolName: string, serv
     }
     const match = getServerScopedToolMatch(state.toolMetadata.get(serverOverride), toolName);
     if (match === "ambiguous") return ambiguousServerToolResult("describe", toolName, serverOverride);
-    if (isServerDisabled(state.config.mcpServers[serverOverride])) return disabledResult("describe", serverOverride);
+    if (isServerDisabled(state.config.mcpServers[serverOverride])) return disabledResult(state, "describe", serverOverride);
     if (isServerInActiveFailureBackoff(state, serverOverride)) return serverBackoffResult(state, "describe", serverOverride);
     serverName = serverOverride;
     toolMeta = match?.tool;
@@ -737,7 +746,7 @@ export function executeDescribe(state: McpExtensionState, toolName: string, serv
   }
 
   if (!serverName || !toolMeta) {
-    if (disabledMatch) return disabledResult("describe", disabledMatch);
+    if (disabledMatch) return disabledResult(state, "describe", disabledMatch);
     if (failedMatch) return serverBackoffResult(state, "describe", failedMatch);
     const suggestions = rankSuggestions(state, toolName, 5, serverOverride);
     const suggestionText = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(", ")}` : "";
@@ -867,7 +876,7 @@ export function executeSearch(
       details: { mode: "search", error: "invalid_search_mode", query },
     };
   }
-  if (server && isServerDisabled(state.config.mcpServers[server])) return disabledResult("search", server);
+  if (server && isServerDisabled(state.config.mcpServers[server])) return disabledResult(state, "search", server);
   if (server && isServerInActiveFailureBackoff(state, server)) return serverBackoffResult(state, "search", server);
   if (searchMode === "semantic" && regex) {
     return {
@@ -960,7 +969,7 @@ export function executeList(state: McpExtensionState, server: string): ProxyTool
       details: { mode: "list", server, tools: [], count: 0, error: "not_found" },
     };
   }
-  if (isServerDisabled(definition)) return disabledResult("list", server);
+  if (isServerDisabled(definition)) return disabledResult(state, "list", server);
 
   const metadata = state.toolMetadata.get(server);
   const toolNames = metadata?.map(m => m.name) ?? [];
@@ -1044,7 +1053,7 @@ export function executeInstructions(state: McpExtensionState, server: string): P
       details: { mode: "instructions", server, error: "not_found" },
     };
   }
-  if (isServerDisabled(definition)) return disabledResult("instructions", server);
+  if (isServerDisabled(definition)) return disabledResult(state, "instructions", server);
   if (isServerInActiveFailureBackoff(state, server)) return serverBackoffResult(state, "instructions", server);
 
   const instructions = state.serverInstructions.get(server);
@@ -1079,7 +1088,7 @@ export async function executeConnect(state: McpExtensionState, serverName: strin
       details: { mode: "connect", error: "not_found", server: serverName },
     };
   }
-  if (isServerDisabled(definition)) return disabledResult("connect", serverName);
+  if (isServerDisabled(definition)) return disabledResult(state, "connect", serverName);
 
   try {
     if (state.ui) {
@@ -1162,13 +1171,13 @@ export async function executeCall(
   const prefixMode = state.config.settings?.toolPrefix ?? "server";
   const disabledCallResult = (disabledServer: string, metadata?: ToolMetadata): ProxyToolResult => {
     if (!metadata) {
-      const message = `Server "${disabledServer}" is disabled. Run /mcp enable ${disabledServer} and /reload to enable it.`;
+      const message = `Server "${disabledServer}" is ${disabledServerReason(state.blockedProjectServers, disabledServer)}`;
       return {
         content: [{ type: "text" as const, text: message }],
         details: { mode: "call", error: "server_disabled", server: disabledServer, requestedTool: toolName, message },
       };
     }
-    const message = `Server "${disabledServer}" is disabled. Run /mcp enable ${disabledServer} and /reload to enable it.`;
+    const message = `Server "${disabledServer}" is ${disabledServerReason(state.blockedProjectServers, disabledServer)}`;
     const identity = metadata.resourceUri
       ? { server: disabledServer, resourceUri: metadata.resourceUri }
       : { server: disabledServer, tool: metadata.originalName };
