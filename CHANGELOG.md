@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Searching the `/mcp-adapter` panel by server name now finds disabled or unconnected servers, so you can select and enable them. Thanks to [@nazerim](https://github.com/nazerim) for reporting [issue #696](https://github.com/nicobailon/pi-mcp-adapter/issues/696).
 - The project MCP server approval prompt now labels the path as the project config that requires approval, instead of calling it the server's source. A project file that only enables a server you defined globally no longer looks like it defines the command. Thanks to [@nazerim](https://github.com/nazerim) for reporting [issue #695](https://github.com/nicobailon/pi-mcp-adapter/issues/695).
 
+### Security
+
+- `smol-toml` now requires 1.9.0 or later, which fixes a high-severity denial of service on malformed TOML. The lockfile also moves `hono`, which comes in through the MCP SDK, to a release with its moderate advisories fixed, so `npm audit` on a lockfile install reports no production vulnerabilities. Thanks to [@jvpacini-CW](https://github.com/jvpacini-CW) for [PR #694](https://github.com/nicobailon/pi-mcp-adapter/pull/694).
+
 ## [3.0.0] - 2026-09-26
 
 ### Highlights
