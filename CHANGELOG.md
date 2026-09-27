@@ -7,18 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-26
+
+### Highlights
+
+- The adapter now has its own config file, `mcp-adapter.json`, so it can run alongside Pi's upcoming built-in MCP support without starting the same servers twice. If you used `mcp.json` with the adapter, rename it (see Breaking).
+- Opening a repository no longer starts its MCP servers on its own. Project servers wait until you trust the project and approve each server.
+- `mcpScript` code now runs in a QuickJS sandbox that scripts cannot escape to reach your files or processes.
+- MCP servers can now match each request to the Pi tool call that made it.
+
 ### Breaking
 
-- The adapter no longer reads `<Pi agent dir>/mcp.json` or `.pi/mcp.json` at all. Rename either file to `mcp-adapter.json`; the format is unchanged, so a plain `mv` works (merge it if the target already exists). This frees `mcp.json` for Pi's built-in MCP support so Pi and the adapter never start the same servers. The adapter's interactive command is now `/mcp-adapter`; `/mcp` remains an alias only when Pi's built-in MCP extension is not installed.
+- The adapter no longer reads `<Pi agent dir>/mcp.json` or `.pi/mcp.json`. Those files now belong to Pi's built-in MCP support. Rename yours to `mcp-adapter.json` in the same folder. The format is the same, so `mv` is enough; if `mcp-adapter.json` already exists, merge the two. Until you do, Pi shows a warning with the exact command. `.mcp.json`, `~/.config/mcp/mcp.json`, and `--mcp-config` work as before.
+- The interactive command is now `/mcp-adapter`. `/mcp` still works as a shortcut when Pi's built-in MCP extension is not installed.
 
 ### Security
 
-- Replace the `mcpScript` `node:vm` sandbox with a memory-limited QuickJS/WASM VM, preventing injected API functions from exposing the host `Function`, `process`, filesystem, or child-process APIs ([#676](https://github.com/nicobailon/pi-mcp-adapter/issues/676)). Serialized output blocks are limited to 16 MiB per script and error messages to 64 KiB. Script values now cross the host boundary as JSON; non-JSON emitted and returned values remain readable, but their formatting can differ from Node's `util.inspect` output.
-- Project-scoped MCP server definitions no longer connect before project trust and explicit server approval are established, including servers introduced by project plugin paths, imports, repo-local host config files even when enabled globally, and Pi packages in project settings. Untrusted projects are blocked; trusted interactive sessions persist definition-bound approvals, while headless sessions skip unapproved servers unless user-global `settings.projectServers` is `"allow"`. Project servers are excluded from load-time eager initialization, and status output now distinguishes trust/approval blocks from manually disabled servers. Fixes [#675](https://github.com/nicobailon/pi-mcp-adapter/issues/675).
+- `mcpScript` now runs scripts in a memory-limited QuickJS/WASM sandbox instead of Node's `vm` module, which scripts could escape to reach `process`, the filesystem, or child processes ([#676](https://github.com/nicobailon/pi-mcp-adapter/issues/676)). Each script can emit up to 16 MiB of output, and error messages are capped at 64 KiB. Values pass between the script and Pi as JSON, so values that are not plain JSON still show up but may be formatted differently than before.
+- MCP servers defined by a project no longer start until the project is trusted and you approve the server. This covers `.mcp.json`, `.pi/mcp-adapter.json`, and servers a project brings in through imports, plugins, repo-local host configs, or Pi packages in its settings. In an untrusted project they stay blocked. In a trusted interactive session, Pi shows the server's command or URL and asks once; the approval is saved, and Pi asks again if the server definition changes. Headless sessions skip unapproved servers unless your user-global config sets `settings.projectServers` to `"allow"`. `/mcp-adapter status` shows why a server is blocked. Fixes [#675](https://github.com/nicobailon/pi-mcp-adapter/issues/675).
 
 ### Added
 
-- MCP `tools/call` requests made for a Pi tool call now carry that call's id in `_meta` as `pi-mcp-adapter/toolCallId`, merged with any UI stream token, so servers can correlate a request with the host's tool call in logs and traces. Direct tools, the `mcp` proxy tool and `mcp__<server>` namespace tools forward it; `mcpScript` calls, which have no single Pi tool call, do not. Thanks to [@sebavalaris](https://github.com/sebavalaris) for [PR #673](https://github.com/nicobailon/pi-mcp-adapter/pull/673).
+- MCP tool calls now include the id of the Pi tool call that made them, under `_meta["pi-mcp-adapter/toolCallId"]`, so servers can match requests to Pi's tool calls in their logs and traces. Direct tools, the `mcp` tool, and `mcp__<server>` tools send it. `mcpScript` calls do not, because a script is not a single tool call. Thanks to [@sebavalaris](https://github.com/sebavalaris) for [PR #673](https://github.com/nicobailon/pi-mcp-adapter/pull/673).
 
 ## [2.38.0] - 2026-09-26
 
