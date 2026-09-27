@@ -7,22 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-27
+
+### Highlights
+
+- Approving a project's MCP servers once now covers every git worktree of that repository, so new worktrees stop asking again.
+- The project-server approval prompt no longer disappears after `/reload` or when another extension takes over the editor. Before, that could leave MCP stuck starting and add up to 30 seconds to every prompt.
+- When a server can't connect, the agent now sees the actual error instead of just "failed".
+- Config files are safer: files saved with a Windows byte order mark now load, and a config file the adapter can't parse is no longer overwritten.
+- A dependency update fixes a high-severity denial-of-service bug in TOML config parsing.
+
 ### Changed
 
 - Project MCP server approvals are now shared across a repository's git worktrees. Approving a server in one checkout covers the same folder in the others, so a new worktree no longer asks again unless the server definition differs. This works for regular, bare, and `--separate-git-dir` repositories; only the main checkout of a `--separate-git-dir` repository asks once on its own. Thanks to [@MauricioRobayo](https://github.com/MauricioRobayo) for [issue #708](https://github.com/nicobailon/pi-mcp-adapter/issues/708).
 
 ### Fixed
 
-- Repeating a word in an MCP tool search no longer hides tools that match it. Thanks to [@kojizada490-wq](https://github.com/kojizada490-wq) for [PR #678](https://github.com/nicobailon/pi-mcp-adapter/pull/678).
-- Changing a stdio server's `inheritEnv` or `literalEnv` setting now refreshes its cached tools, so search and direct tools no longer show stale entries. Thanks to [@kojizada490-wq](https://github.com/kojizada490-wq) for [PR #683](https://github.com/nicobailon/pi-mcp-adapter/pull/683).
+- The project MCP server approval prompt now stays on screen until you answer it, including after `/reload` and panel saves. Before, `/reload` or another extension replacing the editor could hide it, leave MCP stuck starting, and make each prompt wait up to 30 seconds. Thanks to [@Gybra](https://github.com/Gybra) for [issue #690](https://github.com/nicobailon/pi-mcp-adapter/issues/690) and [PR #691](https://github.com/nicobailon/pi-mcp-adapter/pull/691), and to [@nazerim](https://github.com/nazerim) for [issue #695](https://github.com/nicobailon/pi-mcp-adapter/issues/695).
 - Disabled project MCP servers no longer ask for approval or delay interactive startup. Thanks to [@ismailokta](https://github.com/ismailokta) for reporting [issue #685](https://github.com/nicobailon/pi-mcp-adapter/issues/685).
-- Searching the `/mcp-adapter` panel by server name now finds disabled or unconnected servers, so you can select and enable them. Thanks to [@nazerim](https://github.com/nazerim) for reporting [issue #696](https://github.com/nicobailon/pi-mcp-adapter/issues/696).
-- The project MCP server approval prompt now labels the path as the project config that requires approval, instead of calling it the server's source. A project file that only enables a server you defined globally no longer looks like it defines the command. Thanks to [@nazerim](https://github.com/nazerim) for reporting [issue #695](https://github.com/nicobailon/pi-mcp-adapter/issues/695).
+- The approval prompt now labels its path as the project config that needs approval, instead of calling it the server's source. A project file that only enables a server you defined globally no longer looks like it defines the command. Thanks to [@nazerim](https://github.com/nazerim) for reporting [issue #695](https://github.com/nicobailon/pi-mcp-adapter/issues/695).
+- When a server fails to connect, the agent now sees why. `mcp({})` status, the `mcp` tool's "not available" replies, and direct tools show the connection error (for example `spawn demo ENOENT`) next to "failed 12s ago", shortened to one line. Before, only `/mcp-adapter status` and the panel showed it.
 - MCP config files saved with a UTF-8 byte order mark, as some Windows editors do, now load instead of failing to parse. This covers adapter, shared, and imported JSON configs and imported TOML configs, and `pi-mcp-adapter init` keeps the servers in such a file. Thanks to [@quifox](https://github.com/quifox) for [PR #697](https://github.com/nicobailon/pi-mcp-adapter/pull/697).
-- Adding servers, imports, or direct tools no longer overwrites an existing MCP config file that fails to parse or has the wrong shape. The adapter now reports the error and leaves the file unchanged; empty files can still be initialized. Thanks to [@quifox](https://github.com/quifox) for [PR #693](https://github.com/nicobailon/pi-mcp-adapter/pull/693).
+- Adding servers, imports, or direct tools no longer overwrites an existing MCP config file that fails to parse or has the wrong shape. The adapter reports the error and leaves the file alone; empty files can still be set up. Thanks to [@quifox](https://github.com/quifox) for [PR #693](https://github.com/nicobailon/pi-mcp-adapter/pull/693).
+- Repeating a word in an MCP tool search no longer hides tools that match it. Thanks to [@kojizada490-wq](https://github.com/kojizada490-wq) for [PR #678](https://github.com/nicobailon/pi-mcp-adapter/pull/678).
+- Searching the `/mcp-adapter` panel by server name now finds disabled or unconnected servers, so you can select and enable them. Thanks to [@nazerim](https://github.com/nazerim) for reporting [issue #696](https://github.com/nicobailon/pi-mcp-adapter/issues/696).
 - When Jev semantic search times out, is rate limited, or is unavailable, the lexical fallback now returns only tools from `settings.jev.allowedServers`, as the semantic results already did. Thanks to [@quifox](https://github.com/quifox) for [PR #698](https://github.com/nicobailon/pi-mcp-adapter/pull/698).
-- The project MCP server approval dialog now stays on screen until you answer it, including after `/reload` and panel saves. Before, `/reload` or another extension replacing the editor could hide it, leave MCP stuck starting, and make each prompt wait up to 30 seconds. Thanks to [@Gybra](https://github.com/Gybra) for [issue #690](https://github.com/nicobailon/pi-mcp-adapter/issues/690) and [PR #691](https://github.com/nicobailon/pi-mcp-adapter/pull/691), and to [@nazerim](https://github.com/nazerim) for [issue #695](https://github.com/nicobailon/pi-mcp-adapter/issues/695).
-- When a server fails to connect, the agent now sees why. `mcp({})` status, the `mcp` tool's "not available" replies, and direct tools include the connection error (for example `spawn demo ENOENT`) next to "failed 12s ago", shortened to one line. Before, only `/mcp-adapter status` and the panel showed it.
+- Changing a stdio server's `inheritEnv` or `literalEnv` setting now refreshes its cached tools, so search and direct tools no longer show stale entries. Thanks to [@kojizada490-wq](https://github.com/kojizada490-wq) for [PR #683](https://github.com/nicobailon/pi-mcp-adapter/pull/683).
 
 ### Security
 
