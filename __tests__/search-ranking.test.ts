@@ -21,6 +21,19 @@ describe("search ranking", () => {
     expect(scoreToolMatch(tool("search_records", "Find records"), "demo", "search missing")).toBeNull();
   });
 
+  it("does not penalize repeated query tokens", () => {
+    const matchingTool = tool("search_records", "Find records");
+    const state = {
+      toolMetadata: new Map([["demo", [matchingTool]]]),
+      config: { mcpServers: { demo: { command: "demo" } } },
+      manager: { getConnection: () => undefined },
+      failureTracker: new Map(),
+    } as unknown as McpExtensionState;
+
+    expect(scoreToolMatch(matchingTool, "demo", "search search")).not.toBeNull();
+    expect(rankToolMatches(state, "search search").map(({ tool }) => tool.name)).toEqual(["search_records"]);
+  });
+
   it("keeps single-character Unicode query terms", () => {
     expect(scoreToolMatch(tool("weather", "天气和雨"), "demo", "雨")).not.toBeNull();
     expect(scoreToolMatch(tool("calendar", "Calendar events"), "demo", "calendar历")).toBeNull();
