@@ -7,19 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-09-28
+
+### Highlights
+
+- Apps that embed Pi can now run the adapter on MCP connections they manage themselves, and keep control of approvals and results.
+- OAuth sign-in now works with servers that reject `localhost` callbacks, such as Lovable.
+- Direct tools no longer vanish from a session when another Pi session updates the shared tool cache.
+- `mcpScript` now works in Bun-compiled builds of Pi.
+- Trusted projects no longer show a false "project servers blocked" warning at startup.
+
 ### Added
 
-- Added `pi-mcp-adapter/host-managed` for applications that embed Pi and own their MCP connections. The host supplies the transports, records each approved call before a single-use `dispatch()` sends it, sees the raw result first, and decides when the adapter starts and closes. The adapter never resends a call or reconnects, and never reads config, OAuth, or keyring state. See [Host-managed embedding](README.md#host-managed-embedding). Thanks to [@LeonEthan](https://github.com/LeonEthan) for the design in [issue #716](https://github.com/nicobailon/pi-mcp-adapter/issues/716).
+- New `pi-mcp-adapter/host-managed` entry point for apps that embed Pi and manage their own MCP connections. The app supplies the connections, records each approved call before it is sent, sees the raw result first, and decides when the adapter starts and stops. The adapter never retries a call or reconnects, and never reads config, OAuth, or keyring state. See [Host-managed embedding](README.md#host-managed-embedding). Thanks to [@LeonEthan](https://github.com/LeonEthan) for the design in [issue #716](https://github.com/nicobailon/pi-mcp-adapter/issues/716).
 
 ### Changed
 
-- The default OAuth callback now uses `http://127.0.0.1:<port>/callback` instead of `localhost`, as RFC 8252 recommends. Authorization servers that reject `localhost`, such as Lovable, now work without a `redirectUri` override. If a server only accepts the `localhost` URI, set `oauth.redirectUri` to it. Thanks to [@ebysofyan](https://github.com/ebysofyan) for [issue #711](https://github.com/nicobailon/pi-mcp-adapter/issues/711) and [PR #712](https://github.com/nicobailon/pi-mcp-adapter/pull/712).
+- OAuth callbacks now default to `http://127.0.0.1:<port>/callback` instead of `localhost`, as RFC 8252 recommends. Servers that reject `localhost`, such as Lovable, now work without extra setup. If a server only accepts `localhost`, set `oauth.redirectUri` to that address. Thanks to [@ebysofyan](https://github.com/ebysofyan) for [issue #711](https://github.com/nicobailon/pi-mcp-adapter/issues/711) and [PR #712](https://github.com/nicobailon/pi-mcp-adapter/pull/712).
 
 ### Fixed
 
-- Pi no longer warns "MCP: Project servers blocked: … (blocked by project trust)" at startup for a project you already trust, including one trusted through a parent folder. The warning came from the adapter starting `eager` or `keep-alive` servers before Pi had checked project trust. That early start now skips project servers, and the trust check and approval prompt still run at session start. Thanks to [@pnym-ai](https://github.com/pnym-ai) for reporting [issue #713](https://github.com/nicobailon/pi-mcp-adapter/issues/713).
-- Direct tools no longer disappear from a session when another Pi session writes different metadata for the same server to the shared cache, or when the cache entry expires, is deleted, or the server disconnects while idle. Each session now keeps the tools and resources it discovered itself. A configuration change still drops them, and the shared cache is written the same way as before. Thanks to [@NoahWTeng](https://github.com/NoahWTeng) for [PR #718](https://github.com/nicobailon/pi-mcp-adapter/pull/718).
-- A server's `mcp__<server>` tool comes back after its connection-failure backoff ends. Before, on Pi versions without `unregisterTool`, it stayed hidden for the rest of the session. A tool you turned off yourself stays off. Thanks to [@fer-git](https://github.com/fer-git) for [issue #717](https://github.com/nicobailon/pi-mcp-adapter/issues/717).
+- Pi no longer warns "MCP: Project servers blocked: … (blocked by project trust)" at startup in a project you already trust, including one trusted through a parent folder. `eager` and `keep-alive` project servers now wait for Pi's trust check, and the approval prompt still appears when the session starts. Thanks to [@pnym-ai](https://github.com/pnym-ai) for reporting [issue #713](https://github.com/nicobailon/pi-mcp-adapter/issues/713).
+- Direct tools no longer disappear from a session when another Pi session writes different details for the same server to the shared cache, or when the cache entry expires, is deleted, or the server disconnects while idle. Each session now keeps the tools and resources it found. Changing the server's config still clears them. Thanks to [@NoahWTeng](https://github.com/NoahWTeng) for [PR #718](https://github.com/nicobailon/pi-mcp-adapter/pull/718).
+- A server's `mcp__<server>` tool now comes back once the adapter can retry the server after a failed connection. Before, on Pi versions without `unregisterTool`, it stayed hidden for the rest of the session. A tool you turned off yourself stays off. Thanks to [@fer-git](https://github.com/fer-git) for [issue #717](https://github.com/nicobailon/pi-mcp-adapter/issues/717).
 - `mcpScript` works when Pi runs as a Bun-compiled executable. Before, every call failed with `Cannot find package 'quickjs-wasi'` from the sandbox worker. Thanks to [@fmoda3](https://github.com/fmoda3) for [issue #720](https://github.com/nicobailon/pi-mcp-adapter/issues/720).
 
 ## [3.1.0] - 2026-09-27
