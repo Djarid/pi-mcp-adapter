@@ -526,7 +526,7 @@ describe("lazy-keep-alive initializeMcp integration", () => {
     expect(ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Failed to connect"), "error");
   });
 
-  it("preserves valid cached resources only for failed discovery, not authoritative empty", async () => {
+  it.each([false, true])("uses disk fallback only without runtime discovery (runtime snapshot: %s)", async (hasRuntimeSnapshot) => {
     const { initializeMcp, updateMetadataCache } = await import("../init.ts");
 
     const state = await initializeMcp({ getFlag: vi.fn(() => undefined) } as any, {
@@ -548,10 +548,14 @@ describe("lazy-keep-alive initializeMcp integration", () => {
       },
     };
 
+    expect(state.sessionMetadata.get("srv")?.resources).toEqual([]);
+    if (!hasRuntimeSnapshot) state.sessionMetadata.delete("srv");
     mocks.isServerCacheValid.mockReturnValue(true);
     state.manager.getConnection("srv").resourceDiscoveryFailed = true;
     updateMetadataCache(state, "srv");
-    expect((mocks.cache?.servers.srv as any).resources).toEqual([{ uri: "ui://old", name: "Old resource" }]);
+    expect((mocks.cache?.servers.srv as any).resources).toEqual(
+      hasRuntimeSnapshot ? [] : [{ uri: "ui://old", name: "Old resource" }],
+    );
 
     state.manager.getConnection("srv").resourceDiscoveryFailed = false;
     updateMetadataCache(state, "srv");

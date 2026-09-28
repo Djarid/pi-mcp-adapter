@@ -591,19 +591,16 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   function loadToolSurfaceCache(config: McpConfig): MetadataCache | null {
     const cache = loadMetadataCache();
     const currentState = state;
-    if (!currentState || !cache) return cache;
-    const servers = { ...cache.servers };
-    const connections = callReentrant(() => [...currentState.manager.getAllConnections()]);
-    for (const [serverName, connection] of connections) {
+    if (!currentState?.sessionMetadata?.size) return cache;
+    const servers = { ...cache?.servers };
+    for (const [serverName, entry] of currentState.sessionMetadata) {
       const definition = config.mcpServers[serverName];
-      const entry = servers[serverName];
-      if (connection.status !== "connected" || !entry || !definition || isServerDisabled(definition)) continue;
-      const configHash = computeServerHash(definition);
-      if (computeServerHash(connection.definition) !== configHash || entry.configHash !== configHash) continue;
-      const { ttlMs: _liveTtl, ...liveEntry } = entry;
-      servers[serverName] = liveEntry;
+      if (!definition || isServerDisabled(definition)) continue;
+      if (entry.configHash !== computeServerHash(definition)) continue;
+      const { ttlMs: _diskTtl, ...sessionEntry } = entry;
+      servers[serverName] = { ...sessionEntry, cachedAt: Date.now() };
     }
-    return { ...cache, servers };
+    return { version: 1, servers };
   }
 
   function syncToolSurface(ctx?: ExtensionContext): void {

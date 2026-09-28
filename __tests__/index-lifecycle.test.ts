@@ -1368,6 +1368,97 @@ describe("mcpAdapter session lifecycle", () => {
     expect(result.details).toMatchObject({ mode: "install", error: "validation_failed" });
   });
 
+  it.each([0, 1000])("retains each session's discovered catalogue independently of shared disk metadata (TTL %i)", async (ttlMs) => {
+    const dir = mkdtempSync(resolve(tmpdir(), "mcp-session-catalogue-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+    try {
+      const cache = await vi.importActual<typeof import("../metadata-cache.ts")>("../metadata-cache.ts");
+      const core = await vi.importActual<typeof import("../init.ts")>("../init.ts");
+      const direct = await vi.importActual<typeof import("../direct-tool-surface.ts")>("../direct-tool-surface.ts");
+      mocks.loadMetadataCache.mockImplementation(cache.loadMetadataCache);
+      mocks.resolveDirectTools.mockImplementation(direct.resolveDirectTools);
+      mocks.getMissingConfiguredDirectToolServers.mockImplementation(direct.getMissingConfiguredDirectToolServers);
+      const { default: mcpAdapter } = await import("../index.ts");
+      const sessions = [];
+      for (const allowed of ["review", "create"]) {
+        const config = { mcpServers: { shared: {
+          url: "https://shared.example/mcp", lifecycle: "eager" as const,
+          directTools: true as const, includeTools: ["read", "read_record", allowed],
+        } } };
+        const connection = {
+          status: "connected", definition: config.mcpServers.shared,
+          tools: ["read", "review", "create"].map(name => ({ name, inputSchema: { type: "object" } })),
+          resources: [{ name: "record", uri: `file:///${allowed}` }],
+          resourceDiscoveryFailed: false, toolListHints: { ttlMs },
+        };
+        const state = createState();
+        state.config = config;
+        state.manager.getAllConnections = () => new Map([["shared", connection]]);
+        state.manager.getConnection.mockReturnValue(connection);
+        core.updateMetadataCache(state as any, "shared");
+        mocks.loadMcpConfig.mockReturnValue(config);
+        mocks.initializeMcp.mockResolvedValue(state);
+        const { api, handlers } = createPi();
+        const active = trackRuntimeToolActivation(api, ["bash", "mcp"]);
+        mcpAdapter(api);
+        await handlers.get("session_start")?.({}, {});
+        await handlers.get("before_agent_start")?.({ systemPrompt: "test" }, {});
+        await vi.waitFor(() => expect(state.onToolMetadataUpdated).toBeTypeOf("function"));
+        sessions.push({ state, active, connection, handlers, allowed });
+      }
+      const assertCatalogue = (session: typeof sessions[number]) => {
+        expect(session.active().filter(name => name.startsWith("shared_")).sort())
+          .toEqual(["shared_read", "shared_read_record", `shared_${session.allowed}`].sort());
+      };
+      const diskBytes = readFileSync(cache.getMetadataCachePath(), "utf8");
+      for (const session of sessions) {
+        await session.state.onToolMetadataUpdated!("shared", "check");
+        assertCatalogue(session);
+      }
+      expect(readFileSync(cache.getMetadataCachePath(), "utf8")).toBe(diskBytes);
+      const reviewer = sessions[0];
+      reviewer.connection.resources = [];
+      reviewer.connection.resourceDiscoveryFailed = true;
+      core.updateMetadataCache(reviewer.state as any, "shared");
+      await reviewer.state.onToolMetadataUpdated!("shared", "resource-discovery-failed");
+      assertCatalogue(reviewer);
+      expect(reviewer.state.sessionMetadata?.get("shared")?.resources)
+        .toEqual([{ name: "record", uri: "file:///review" }]);
+      rmSync(cache.getMetadataCachePath());
+      for (const session of sessions) {
+        session.state.manager.getAllConnections = () => new Map();
+        await session.state.onToolMetadataUpdated!("shared", "idle");
+        assertCatalogue(session);
+      }
+      const writer = sessions[1];
+      const originalDefinition = writer.state.config.mcpServers.shared;
+      for (const definition of [
+        { ...originalDefinition, disabled: true },
+        { ...originalDefinition, url: "https://changed.example/mcp" },
+        { ...originalDefinition, includeTools: ["review"] },
+      ]) {
+        writer.state.config.mcpServers.shared = definition;
+        core.updateMetadataCache(writer.state as any, "shared");
+        await writer.state.onToolMetadataUpdated!("shared", "config-change");
+        expect(writer.active().filter(name => name.startsWith("shared_"))).toEqual([]);
+        writer.state.config.mcpServers.shared = originalDefinition;
+        await writer.state.onToolMetadataUpdated!("shared", "config-restored");
+        assertCatalogue(writer);
+      }
+      reviewer.connection.tools = [];
+      reviewer.connection.resourceDiscoveryFailed = false;
+      core.updateMetadataCache(reviewer.state as any, "shared");
+      await reviewer.state.onToolMetadataUpdated!("shared", "tools-list-changed");
+      expect(reviewer.active().filter(name => name.startsWith("shared_"))).toEqual([]);
+      await sessions[1].state.onToolMetadataUpdated!("shared", "peer-change");
+      assertCatalogue(sessions[1]);
+      for (const session of sessions) await session.handlers.get("session_shutdown")?.({}, {});
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("hot-loads zero-TTL live tools and resources while leaving the disk entry non-cacheable", async () => {
     const actualDirectTools = await vi.importActual<typeof import("../direct-tool-surface.ts")>("../direct-tool-surface.ts");
     const actualCache = await vi.importActual<typeof import("../metadata-cache.ts")>("../metadata-cache.ts");
@@ -1427,16 +1518,15 @@ describe("mcpAdapter session lifecycle", () => {
         resources: [],
         resourceDiscoveryFailed: true,
       });
+      const liveEntry = {
+        ...diskEntry,
+        tools: actualCache.serializeTools(connections.get("demo").tools),
+        resources: actualCache.serializeResources(connections.get("demo").resources),
+      };
+      currentState.sessionMetadata = new Map([["demo", liveEntry]]);
       mocks.loadMetadataCache.mockReturnValue({
         version: 1,
-        servers: {
-          demo: {
-            ...diskEntry,
-            tools: actualCache.serializeTools(connections.get("demo").tools),
-            resources: actualCache.serializeResources(connections.get("demo").resources),
-          },
-          fallback: fallbackEntry,
-        },
+        servers: { demo: liveEntry, fallback: fallbackEntry },
       });
       await currentState.onToolMetadataUpdated?.("demo", "proxy-connect");
       return connectResult;

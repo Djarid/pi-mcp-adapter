@@ -597,6 +597,7 @@ export function updateMetadataCache(
   if (!definition || isServerDisabled(definition)) return;
 
   const configHash = computeServerHash(definition);
+  if (connection.definition && computeServerHash(connection.definition) !== configHash) return;
   const existing = loadMetadataCache();
   const existingEntry = existing?.servers?.[serverName];
 
@@ -606,13 +607,13 @@ export function updateMetadataCache(
     ? existingEntry?.configHash === configHash ? existingEntry.prompts : undefined
     : serializePrompts(connection.prompts ?? []);
 
-  if (
-    definition.exposeResources !== false &&
-    connection.resourceDiscoveryFailed === true &&
-    existingEntry?.resources?.length &&
-    isServerCacheValid(existingEntry, definition)
-  ) {
-    resources = existingEntry.resources;
+  if (definition.exposeResources !== false && connection.resourceDiscoveryFailed === true) {
+    const sessionEntry = state.sessionMetadata?.get(serverName);
+    if (sessionEntry?.configHash === configHash) {
+      resources = sessionEntry.resources ?? [];
+    } else if (existingEntry?.resources?.length && isServerCacheValid(existingEntry, definition)) {
+      resources = existingEntry.resources;
+    }
   }
 
   const entry: ServerCacheEntry = {
@@ -626,6 +627,7 @@ export function updateMetadataCache(
     cachedAt: Date.now(),
   };
 
+  (state.sessionMetadata ??= new Map()).set(serverName, entry);
   saveMetadataCache({ version: 1, servers: { [serverName]: entry } });
 }
 
