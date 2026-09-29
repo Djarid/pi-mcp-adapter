@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Other extensions can call a configured MCP tool from their own code by emitting `pi-mcp-adapter:runtime-tool-call:v1` on Pi's event bus. The call goes through the same tool resolution and approval as `mcp({ tool })`, and `request.result` is a promise that resolves to `{ ok: true, result }` or `{ ok: false, error }`. Thanks to [@Djarid](https://github.com/Djarid) for [PR #735](https://github.com/nicobailon/pi-mcp-adapter/pull/735).
+
 ## [3.3.0] - 2026-09-29
 
 ### Highlights

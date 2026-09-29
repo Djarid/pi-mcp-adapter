@@ -225,6 +225,32 @@ Cross-extension registration uses Pi's shared event bus and does not require a r
 
 Runtime registrations are session scoped and never written to config files. Duplicate server names fail closed against configured servers and other registrations. Registered servers use the normal lazy connection, OAuth, approval, and shutdown behavior, but they are proxy-tool-only and their tools become visible at the next tool sync. To change a definition, dispose the registration and register again.
 
+### Runtime tool calls from other extensions
+
+An extension can call a configured MCP tool from its own code, without a model turn:
+
+```ts
+const MCP_RUNTIME_TOOL_CALL_EVENT = "pi-mcp-adapter:runtime-tool-call:v1";
+type RuntimeToolCallRequest = {
+  version: 1;
+  tool: string;
+  args?: Record<string, unknown>;
+  server?: string;
+  result?: Promise<
+    | { ok: true; result: { content: unknown[]; details?: unknown } }
+    | { ok: false; error: Error }
+  >;
+};
+
+const request: RuntimeToolCallRequest = { version: 1, tool: "search", args: { query: "mcp" } };
+pi.events.emit(MCP_RUNTIME_TOOL_CALL_EVENT, request);
+if (!request.result) throw new Error("pi-mcp-adapter is not installed");
+const outcome = await request.result;
+if (!outcome.ok) throw outcome.error;
+```
+
+`tool` and `server` resolve the same way as `mcp({ tool, server })`, and approval settings and disabled servers apply as they do for that call. The adapter sets `request.result` to a promise during `emit()`; await it. A tool error or denied approval resolves with `ok: false`. Emit during `session_start` or later; calls fail after the session shuts down.
+
 ### SDK configuration
 
 Use `createMcpAdapter` when an SDK or server integration already owns its MCP configuration:
