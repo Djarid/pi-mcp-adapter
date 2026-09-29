@@ -7,24 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-09-29
+
+### Highlights
+
+- You can now tell a read-only MCP tool from one that deletes data. The hints servers declare on their tools show up when you describe a tool and in the approval prompt.
+- New `approveTools: "destructive"` setting asks before any tool that may change or delete data, without making you list tool names.
+- A tool call no longer fails with "Request timed out" while you are still answering the server's input form.
+- The model gets a better idea of what a tool returns, even when the server declares no output schema.
+- MCP prompt slash commands now suggest argument names as you type.
+
 ### Added
 
-- MCP prompt slash commands now autocomplete declared argument names locally, preserving arguments already entered and using refreshed live prompt metadata when available. Thanks to [@quifox](https://github.com/quifox) for [PR #733](https://github.com/nicobailon/pi-mcp-adapter/pull/733).
+- The hints a server declares on its tools (read-only, destructive, idempotent, open-world, title) are now kept, including in the metadata cache, and shown in `mcp({ describe })`, in `tools.describe` inside `mcpScript`, and in the tool approval prompt. Search results and direct-tool descriptions stay the same, so nothing is added to every turn's context.
+- `approveTools: "destructive"` asks before any tool that may change or delete data. Only tools the server marks read-only or non-destructive run without a prompt; tools with no hints still ask. It works globally or per server.
+- For tools that declare no output schema, `mcp({ describe })` and `tools.describe` in `mcpScript` now show the output shape seen so far this session, after a successful call returns structured content or a JSON text result. Only field names and types are shown, never values. The shape is kept in memory only and is labeled as observed, not a contract.
+- MCP prompt slash commands now suggest declared argument names as you type. Arguments you already entered are kept, suggestions follow the server's latest prompt list, and nothing connects to a server just to show them. Thanks to [@quifox](https://github.com/quifox) for [PR #733](https://github.com/nicobailon/pi-mcp-adapter/pull/733).
 - Jev semantic search works with an existing OpenRouter key. Set `SYSTEMONE_ENDPOINT=https://openrouter.ai/api/alpha/decisions` and `OPENROUTER_API_KEY` is used as the key, with the model defaulting to `typesafe/jev-1.13`. The key is never sent to any other endpoint.
-- You can now tell a read-only MCP tool from one that deletes data. The hints a server declares on its tools (read-only, destructive, idempotent, open-world, title) are kept, including in the metadata cache, and shown in `mcp({ describe })`, in `tools.describe` inside `mcpScript`, and in the tool approval prompt. Search results and direct-tool descriptions stay unchanged, so nothing is added to every turn's context.
-- Tools that declare no output schema no longer leave the model guessing what a result looks like. After a successful call returns structured content or a JSON text result, `mcp({ describe })` and `tools.describe` in `mcpScript` show the output shape seen so far this session (field names and types only, never values). The shape is kept in memory only and is labeled as observed, not a contract.
-- `approveTools: "destructive"` asks before any tool that may change or delete data, without listing tool names. Only tools the server marks read-only or non-destructive run without a prompt; tools with no hints are gated. It works globally or per server.
-
-### Fixed
-
-- Typechecking the adapter's sources with `@types/node` 25 no longer fails in `unix-socket-transport.ts`. The Unix socket transport now converts text chunks to a `Buffer` before framing, and binary chunks pass through unchanged. Thanks to [@abdwhb-png](https://github.com/abdwhb-png) for [PR #732](https://github.com/nicobailon/pi-mcp-adapter/pull/732).
-- A tool call no longer times out while you are answering the server's input prompt. The request timeout (60 seconds by default) kept running while the form was open, so a slow answer failed the call with "Request timed out" and the answer was lost. The timeout now pauses while the prompt is open and resumes afterwards.
-- Jev no longer rejects responses that carry extra provider metadata, such as OpenRouter's `id`, `provider`, and `usage.cost`. The documented OpenRouter setup previously failed with "Jev returned an invalid response."
 
 ### Changed
 
-- Dropped the unused `@modelcontextprotocol/ext-apps` dependency. The MCP Apps host already runs from a bundled app bridge, and the package's peer requirement made plain `npm install` pull in the legacy MCP SDK v1 and its HTTP server dependencies.
-- A mistyped `approveTools` value no longer turns approval off silently. A value other than `true`, `false`, `"destructive"`, or a list of tool name patterns now requires approval for every tool.
+- A mistyped `approveTools` value no longer turns approval off silently. Any value other than `true`, `false`, `"destructive"`, or a list of tool name patterns now asks before every tool.
+- Dropped the unused `@modelcontextprotocol/ext-apps` dependency. MCP Apps already run from a bundled app bridge, and the package made a plain `npm install` pull in the old MCP SDK v1 and its HTTP server dependencies.
+
+### Fixed
+
+- A tool call no longer times out while you are answering the server's input prompt. The request timeout (60 seconds by default) kept running while the form was open, so a slow answer failed the call with "Request timed out" and the answer was lost. The timeout now pauses while the prompt is open.
+- Jev no longer rejects responses that carry extra provider details, such as OpenRouter's `id`, `provider`, and `usage.cost`. The documented OpenRouter setup previously failed with "Jev returned an invalid response."
+- Typechecking the adapter's sources with `@types/node` 25 no longer fails in the Unix socket transport. Thanks to [@abdwhb-png](https://github.com/abdwhb-png) for [PR #732](https://github.com/nicobailon/pi-mcp-adapter/pull/732).
 
 ## [3.2.0] - 2026-09-28
 
