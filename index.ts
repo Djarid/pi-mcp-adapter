@@ -862,17 +862,15 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     if (typeof rawRequest !== "object" || rawRequest === null || Array.isArray(rawRequest)) return;
     const request = rawRequest as McpRuntimeToolCallRequest;
     if (request.result !== undefined) return;
-    if (request.version !== MCP_RUNTIME_TOOL_CALL_VERSION) {
-      request.result = Promise.resolve({ ok: false, error: new Error(`Unsupported MCP runtime tool-call version: ${String(request.version)}`) });
-      return;
-    }
-    if (typeof request.tool !== "string" || request.tool.trim() === "") {
-      request.result = Promise.resolve({ ok: false, error: new Error("MCP runtime tool-call requires a non-empty `tool` name") });
-      return;
-    }
     const ctx = sessionCtx;
     request.result = (async (): Promise<McpRuntimeToolCallResult> => {
       try {
+        if (request.version !== MCP_RUNTIME_TOOL_CALL_VERSION) {
+          throw new Error(`Unsupported MCP runtime tool-call version: ${String(request.version)}`);
+        }
+        if (typeof request.tool !== "string" || request.tool.trim() === "") {
+          throw new Error("MCP runtime tool-call requires a non-empty `tool` name");
+        }
         if (!ctx) throw new Error("MCP runtime tool calls require an active Pi session");
         const callState = await awaitWithTimeout(ensureSessionRuntime(ctx), INIT_WAIT_TIMEOUT_MS);
         if (callState === INIT_WAIT_TIMED_OUT) {
@@ -884,7 +882,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
         const result = await executeCall(callState, request.tool, request.args, request.server, getPiTools, undefined, "script");
         assertRuntimeGuard(guard);
         // Denials and tool errors resolve with details.error rather than rejecting.
-        const failure = (result.details as { error?: unknown } | undefined)?.error;
+        const failure = result.details?.error;
         if (failure !== undefined) return { ok: false, error: new Error(`MCP tool call failed: ${String(failure)}`) };
         return { ok: true, result };
       } catch (error) {

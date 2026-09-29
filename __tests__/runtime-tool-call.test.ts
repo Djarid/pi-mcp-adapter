@@ -42,21 +42,13 @@ vi.mock("../proxy-modes.ts", () => ({
 function createState() {
   return {
     manager: {
-      getAllConnections: () => new Map(),
-      getConnection: vi.fn(() => undefined),
       close: vi.fn().mockResolvedValue(undefined),
     },
     lifecycle: {
       gracefulShutdown: vi.fn().mockResolvedValue(undefined),
-      ensureConverged: vi.fn().mockResolvedValue(undefined),
-      registerServer: vi.fn(),
-      markKeepAlive: vi.fn(),
-      unregisterServer: vi.fn(),
     },
     toolMetadata: new Map(),
     config: { mcpServers: {} },
-    failureTracker: new Map(),
-    completedUiSessions: [],
   } as any;
 }
 
