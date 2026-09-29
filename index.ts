@@ -1,4 +1,4 @@
-import { withFileMutationQueue, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext, type ToolInfo } from "@earendil-works/pi-coding-agent";
+import { withFileMutationQueue, type AgentToolResult, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext, type ToolInfo } from "@earendil-works/pi-coding-agent";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -112,6 +112,31 @@ export interface McpRuntimeSnapshotRequest {
   version: typeof MCP_RUNTIME_SNAPSHOT_VERSION;
   name: string;
   result?: McpRuntimeSnapshotResult;
+}
+
+export const MCP_RUNTIME_TOOL_CALL_EVENT = "pi-mcp-adapter:runtime-tool-call:v1" as const;
+export const MCP_RUNTIME_TOOL_CALL_VERSION = 1 as const;
+
+export type McpRuntimeToolCallResult =
+  | { ok: true; result: AgentToolResult<Record<string, unknown>> }
+  | { ok: false; error: Error };
+
+/**
+ * Request shape for MCP_RUNTIME_TOOL_CALL_EVENT. `result` is written as a
+ * PROMISE (never resolved inline), because a tool call is inherently async
+ * and the listener callback itself cannot be async -- mirroring how
+ * McpRuntimeRegistrationRequest.result is written synchronously because
+ * registration itself is synchronous. The requester awaits `request.result`
+ * after confirming it was set.
+ */
+export interface McpRuntimeToolCallRequest {
+  version: typeof MCP_RUNTIME_TOOL_CALL_VERSION;
+  /** Tool name/path, exactly as accepted by the `mcp({ tool })` proxy call. */
+  tool: string;
+  args?: Record<string, unknown>;
+  /** Optional explicit server name, disambiguating a tool name collision. */
+  server?: string;
+  result?: Promise<McpRuntimeToolCallResult>;
 }
 
 // Fast path for callers that share the adapter's module and ExtensionAPI.
@@ -839,6 +864,49 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     } catch (error) {
       request.result = { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
     }
+  });
+  pi.events.on(MCP_RUNTIME_TOOL_CALL_EVENT, (rawRequest: unknown) => {
+    if (typeof rawRequest !== "object" || rawRequest === null || Array.isArray(rawRequest)) return;
+    const request = rawRequest as McpRuntimeToolCallRequest;
+    if (request.result !== undefined) return;
+    if (request.version !== MCP_RUNTIME_TOOL_CALL_VERSION) {
+      request.result = Promise.resolve({ ok: false, error: new Error(`Unsupported MCP runtime tool-call version: ${String(request.version)}`) });
+      return;
+    }
+    if (typeof request.tool !== "string" || request.tool.trim() === "") {
+      request.result = Promise.resolve({ ok: false, error: new Error("MCP runtime tool-call requires a non-empty `tool` name") });
+      return;
+    }
+    // Deliberately reuses the exact same executeCall() path the `mcp({ tool })`
+    // proxy call and mcpScript's tools.call() both use (VISION.md: "compose
+    // before inventing") -- server resolution, ambiguity handling, disabled-
+    // server checks, and approval all run identically to a model-issued call.
+    // No new call logic is introduced here.
+    request.result = (async (): Promise<McpRuntimeToolCallResult> => {
+      try {
+        if (!state && !initPromise) {
+          throw new Error("MCP runtime tool-call requires an active MCP session; none is initialized and none is starting");
+        }
+        let callState = state;
+        if (!callState && initPromise) {
+          const initialized = await awaitWithTimeout(initPromise, INIT_WAIT_TIMEOUT_MS);
+          if (initialized === INIT_WAIT_TIMED_OUT) {
+            throw new Error(`MCP initialization is still in progress after ${INIT_WAIT_TIMEOUT_MS}ms`);
+          }
+          callState = initialized;
+        }
+        if (!callState) {
+          throw new Error("MCP is not initialized");
+        }
+        const guard = captureRuntimeGuard(callState);
+        const proxyModes = await loadForRuntime(loadProxyModes, guard);
+        const result = await proxyModes.executeCall(callState, request.tool, request.args, request.server, getPiTools, undefined, "script");
+        assertRuntimeGuard(guard);
+        return { ok: true, result };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
+      }
+    })();
   });
 
   const getPiTools = (): ToolInfo[] => pi.getAllTools();
