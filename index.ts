@@ -196,7 +196,6 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   const sessionConfig = options.config !== undefined ? cloneMcpConfig(options.config) : undefined;
   const programmaticConfig = sessionConfig !== undefined;
   let state: McpExtensionState | null = null;
-  // Context of the live session, used by runtime tool calls to start a deferred runtime.
   let sessionCtx: ExtensionContext | null = null;
   let initPromise: Promise<McpExtensionState> | null = null;
   let initStartedPromise: Promise<void> | null = null;
@@ -871,7 +870,6 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
       request.result = Promise.resolve({ ok: false, error: new Error("MCP runtime tool-call requires a non-empty `tool` name") });
       return;
     }
-    // Same resolution, disabled-server, and approval path as mcp({ tool }).
     const ctx = sessionCtx;
     request.result = (async (): Promise<McpRuntimeToolCallResult> => {
       try {
