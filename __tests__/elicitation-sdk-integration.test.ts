@@ -16,22 +16,26 @@ const fixture = fileURLToPath(new URL("./fixtures/elicitation-server.mjs", impor
 const definition = { command: process.execPath, args: [fixture] };
 const managers: McpServerManager[] = [];
 
-function createUi(answers: string[] = []): ExtensionUIContext {
+function createUi(answers: string[] = [], delayMs = 0): ExtensionUIContext {
+  const later = async <T>(value: T) => {
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+    return value;
+  };
   return {
-    select: vi.fn(async () => answers.shift()),
-    input: vi.fn(async () => "stock-pi-user"),
+    select: vi.fn(async () => later(answers.shift())),
+    input: vi.fn(async () => later("stock-pi-user")),
     notify: vi.fn(),
   } as unknown as ExtensionUIContext;
 }
 
-async function createConnectedManager(mode: ExtensionMode, answers: string[] = []) {
-  const ui = createUi(answers);
+async function createConnectedManager(mode: ExtensionMode, answers: string[] = [], options: { requestTimeoutMs?: number; answerDelayMs?: number } = {}) {
+  const ui = createUi(answers, options.answerDelayMs);
   const manager = new McpServerManager();
   manager.setElicitationConfig({
     ui,
     allowUrl: isTuiMode({ hasUI: true, mode }),
   });
-  await manager.connect("real", definition);
+  await manager.connect("real", { ...definition, requestTimeoutMs: options.requestTimeoutMs });
   managers.push(manager);
   return { manager, ui };
 }
@@ -75,6 +79,43 @@ describe("elicitation with the real MCP SDK", () => {
       action: "accept",
       content: { name: "stock-pi-user" },
     });
+  });
+
+  const formSpec = { serverName: "real", prefixedName: "real_form", originalName: "form", description: "form" } as DirectToolSpec;
+
+  it.each(["proxy", "direct"] as const)("does not count time spent answering a form against the %s call timeout", async (adapter) => {
+    const { manager } = await createConnectedManager("tui", ["Continue", "Enter value", "Submit"], {
+      requestTimeoutMs: 500,
+      answerDelayMs: 300,
+    });
+    const state = createState(manager, [{ name: "real_form", originalName: "form", description: "form" }]);
+
+    const result = adapter === "proxy"
+      ? await executeCall(state, "real_form", {}, "real")
+      : await createDirectToolExecutor(() => state, () => null, formSpec)("id", {});
+
+    expect(JSON.parse(resultText(result))).toEqual({ action: "accept", content: { name: "stock-pi-user" } });
+  });
+
+  it("cancels a call at once while its form is still open", async () => {
+    const { manager, ui } = await createConnectedManager("tui", ["Continue"], { answerDelayMs: 30_000 });
+    const state = createState(manager, [{ name: "real_form", originalName: "form", description: "form" }]);
+    const controller = new AbortController();
+
+    const call = createDirectToolExecutor(() => state, () => null, formSpec)("id", {}, controller.signal);
+    await vi.waitFor(() => expect(ui.select).toHaveBeenCalled());
+    controller.abort();
+
+    await expect(call).resolves.toMatchObject({ details: { error: "aborted" } });
+  });
+
+  it("still times out a call that is not waiting on the user", async () => {
+    const { manager } = await createConnectedManager("tui", [], { requestTimeoutMs: 300 });
+    const state = createState(manager, [{ name: "real_hang", originalName: "hang", description: "hang" }]);
+
+    const result = await executeCall(state, "real_hang", {}, "real");
+
+    expect(result.details).toMatchObject({ error: "call_failed", message: "Request timed out" });
   });
 
   it("rejects URL elicitation over real SDK dispatch in stock Pi RPC mode", async () => {
