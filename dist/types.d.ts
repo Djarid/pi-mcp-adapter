@@ -54,6 +54,7 @@ export interface McpTool {
     description?: SdkTool["description"];
     inputSchema?: SdkTool["inputSchema"];
     outputSchema?: SdkTool["outputSchema"];
+    annotations?: SdkTool["annotations"];
     _meta?: SdkTool["_meta"];
 }
 export interface McpResource {
@@ -524,6 +525,15 @@ export interface ToolMetadata {
     inputSchema?: unknown;
     outputSchema?: unknown;
     uiStreamMode?: UiStreamMode;
+    annotations?: McpToolAnnotations;
+}
+/** Behavior hints a server declared on a tool. Hints, not guarantees. */
+export interface McpToolAnnotations {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
 }
 export interface PromptMetadata {
     serverName: string;
@@ -562,6 +572,7 @@ export interface CachedTool {
     uiResourceUri?: string;
     uiVisibility?: UiToolVisibility[];
     uiStreamMode?: "eager" | "stream-first";
+    annotations?: McpToolAnnotations;
 }
 export interface CachedResource {
     uri: string;
