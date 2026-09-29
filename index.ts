@@ -204,6 +204,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   const sessionConfig = options.config !== undefined ? cloneMcpConfig(options.config) : undefined;
   const programmaticConfig = sessionConfig !== undefined;
   let state: McpExtensionState | null = null;
+  // Set only by session_shutdown, cleared only by the next real session_start.
+  // Distinguishes "the runtime intentionally, permanently stopped" from
+  // "the runtime has not started yet" -- both look identical from state/
+  // initPromise/currentOwner alone, which the tool-call event's on-demand
+  // initialization needs to tell apart (review Issue 2, second round):
+  // without this it cannot refuse to restart MCP after a real shutdown.
+  let sessionEnded = false;
   let initPromise: Promise<McpExtensionState> | null = null;
   let initStartedPromise: Promise<void> | null = null;
   let currentOwner: McpRuntimeOwner | null = null;
@@ -884,31 +891,28 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     // No new call logic is introduced here.
     request.result = (async (): Promise<McpRuntimeToolCallResult> => {
       try {
-        // Issue 1 fix: a session with valid cached metadata defers real MCP
-        // initialization until something actually needs it -- state AND
-        // initPromise are both absent in that case, exactly like the model-
-        // facing mcp proxy tool sees on its own first call. That path starts
-        // initialization via ensureSessionRuntime(ctx). This event has no
-        // ExtensionContext to hand it (an event payload is not a tool call),
-        // so it builds the same minimal, ctx-shaped object
-        // startLoadTimeInitialization() already constructs for the load-time
-        // path a few lines up in this file, and calls the same
-        // startInitialization() this event's sibling code paths already use
-        // -- no new initialization logic, composing with what exists.
-        let callState = state;
-        if (!callState && !initPromise) {
-          const owner = currentOwner?.isActive() ? currentOwner : createMcpRuntimeOwner();
-          if (owner !== currentOwner) currentOwner = owner;
-          const generation = currentOwner === owner && lifecycleGeneration > 0
-            ? lifecycleGeneration
-            : ++lifecycleGeneration;
-          startInitialization(
-            { mode: "print", hasUI: false, cwd: process.cwd(), model: undefined, modelRegistry: undefined, signal: undefined } as unknown as ExtensionContext,
-            owner,
-            generation,
-            "tool_call_event_initialization",
-          );
+        // Round 2 review fix (supersedes the round-1 "start init ourselves"
+        // approach, which had two real races): this event NEVER starts MCP
+        // initialization itself. It only ever uses a state/initPromise a
+        // real, ExtensionContext-bearing caller already created --
+        // session_start (real project-trust/cwd context) or the load-time
+        // path. Two concrete problems with self-starting, found in review:
+        // (1) if this event's synthetic-context init raced ahead of
+        // session_start's own initPromise check, session_start would skip
+        // its own real-context initialization for the rest of that session
+        // -- a permanent contamination, not a one-off degraded call, since
+        // the synthetic context lacks isProjectTrusted() and uses
+        // process.cwd() unconditionally; (2) after session_shutdown clears
+        // state/initPromise/currentOwner to null, they are indistinguishable
+        // from "never started", so self-starting would silently reconnect
+        // servers after the session already ended. sessionEnded (declared
+        // above, set only by session_shutdown, cleared only by session_start)
+        // makes that second case reportable; the first case is avoided
+        // entirely by never calling startInitialization() from here.
+        if (sessionEnded) {
+          throw new Error("MCP runtime tool-call refused: the owning session has already shut down");
         }
+        let callState = state;
         if (!callState && initPromise) {
           const initialized = await awaitWithTimeout(initPromise, INIT_WAIT_TIMEOUT_MS);
           if (initialized === INIT_WAIT_TIMED_OUT) {
@@ -917,7 +921,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
           callState = initialized;
         }
         if (!callState) {
-          throw new Error("MCP is not initialized");
+          throw new Error("MCP runtime tool-call requires an active MCP session; none is initialized and none is starting. This event never starts MCP initialization itself (see comment above) -- call it only after a real session_start has begun initializing, e.g. from a handler registered after your own session_start.");
         }
         const guard = captureRuntimeGuard(callState);
         const proxyModes = await loadForRuntime(loadProxyModes, guard);
@@ -1182,6 +1186,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    sessionEnded = false;
     const builtInMcpDetected = hasBuiltInMcpCommand(pi);
     if (!builtInMcpDetected && !mcpAliasRegistered) {
       registerMcpCommand("mcp");
@@ -1315,6 +1320,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   });
 
   pi.on("session_shutdown", async () => {
+    sessionEnded = true;
     ++lifecycleGeneration;
     const currentState = state;
     const owner = currentOwner;
