@@ -121,20 +121,12 @@ export type McpRuntimeToolCallResult =
   | { ok: true; result: AgentToolResult<Record<string, unknown>> }
   | { ok: false; error: Error };
 
-/**
- * Request shape for MCP_RUNTIME_TOOL_CALL_EVENT. `result` is written as a
- * PROMISE (never resolved inline), because a tool call is inherently async
- * and the listener callback itself cannot be async -- mirroring how
- * McpRuntimeRegistrationRequest.result is written synchronously because
- * registration itself is synchronous. The requester awaits `request.result`
- * after confirming it was set.
- */
+/** The adapter sets `result` to a promise during `emit()`; await it. */
 export interface McpRuntimeToolCallRequest {
   version: typeof MCP_RUNTIME_TOOL_CALL_VERSION;
-  /** Tool name/path, exactly as accepted by the `mcp({ tool })` proxy call. */
+  /** Tool name as accepted by `mcp({ tool })`. */
   tool: string;
   args?: Record<string, unknown>;
-  /** Optional explicit server name, disambiguating a tool name collision. */
   server?: string;
   result?: Promise<McpRuntimeToolCallResult>;
 }
@@ -204,13 +196,8 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   const sessionConfig = options.config !== undefined ? cloneMcpConfig(options.config) : undefined;
   const programmaticConfig = sessionConfig !== undefined;
   let state: McpExtensionState | null = null;
-  // Set only by session_shutdown, cleared only by the next real session_start.
-  // Distinguishes "the runtime intentionally, permanently stopped" from
-  // "the runtime has not started yet" -- both look identical from state/
-  // initPromise/currentOwner alone, which the tool-call event's on-demand
-  // initialization needs to tell apart (review Issue 2, second round):
-  // without this it cannot refuse to restart MCP after a real shutdown.
-  let sessionEnded = false;
+  // Context of the live session, used by runtime tool calls to start a deferred runtime.
+  let sessionCtx: ExtensionContext | null = null;
   let initPromise: Promise<McpExtensionState> | null = null;
   let initStartedPromise: Promise<void> | null = null;
   let currentOwner: McpRuntimeOwner | null = null;
@@ -884,61 +871,23 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
       request.result = Promise.resolve({ ok: false, error: new Error("MCP runtime tool-call requires a non-empty `tool` name") });
       return;
     }
-    // Deliberately reuses the exact same executeCall() path the `mcp({ tool })`
-    // proxy call and mcpScript's tools.call() both use (VISION.md: "compose
-    // before inventing") -- server resolution, ambiguity handling, disabled-
-    // server checks, and approval all run identically to a model-issued call.
-    // No new call logic is introduced here.
+    // Same resolution, disabled-server, and approval path as mcp({ tool }).
+    const ctx = sessionCtx;
     request.result = (async (): Promise<McpRuntimeToolCallResult> => {
       try {
-        // Round 2 review fix (supersedes the round-1 "start init ourselves"
-        // approach, which had two real races): this event NEVER starts MCP
-        // initialization itself. It only ever uses a state/initPromise a
-        // real, ExtensionContext-bearing caller already created --
-        // session_start (real project-trust/cwd context) or the load-time
-        // path. Two concrete problems with self-starting, found in review:
-        // (1) if this event's synthetic-context init raced ahead of
-        // session_start's own initPromise check, session_start would skip
-        // its own real-context initialization for the rest of that session
-        // -- a permanent contamination, not a one-off degraded call, since
-        // the synthetic context lacks isProjectTrusted() and uses
-        // process.cwd() unconditionally; (2) after session_shutdown clears
-        // state/initPromise/currentOwner to null, they are indistinguishable
-        // from "never started", so self-starting would silently reconnect
-        // servers after the session already ended. sessionEnded (declared
-        // above, set only by session_shutdown, cleared only by session_start)
-        // makes that second case reportable; the first case is avoided
-        // entirely by never calling startInitialization() from here.
-        if (sessionEnded) {
-          throw new Error("MCP runtime tool-call refused: the owning session has already shut down");
+        if (!ctx) throw new Error("MCP runtime tool calls require an active Pi session");
+        const callState = await awaitWithTimeout(ensureSessionRuntime(ctx), INIT_WAIT_TIMEOUT_MS);
+        if (callState === INIT_WAIT_TIMED_OUT) {
+          throw new Error(`MCP initialization is still in progress after ${INIT_WAIT_TIMEOUT_MS}ms`);
         }
-        let callState = state;
-        if (!callState && initPromise) {
-          const initialized = await awaitWithTimeout(initPromise, INIT_WAIT_TIMEOUT_MS);
-          if (initialized === INIT_WAIT_TIMED_OUT) {
-            throw new Error(`MCP initialization is still in progress after ${INIT_WAIT_TIMEOUT_MS}ms`);
-          }
-          callState = initialized;
-        }
-        if (!callState) {
-          throw new Error("MCP runtime tool-call requires an active MCP session; none is initialized and none is starting. This event never starts MCP initialization itself (see comment above) -- call it only after a real session_start has begun initializing, e.g. from a handler registered after your own session_start.");
-        }
+        if (!callState) throw new Error("MCP is not initialized");
         const guard = captureRuntimeGuard(callState);
-        const proxyModes = await loadForRuntime(loadProxyModes, guard);
-        const result = await proxyModes.executeCall(callState, request.tool, request.args, request.server, getPiTools, undefined, "script");
+        const { executeCall } = await loadForRuntime(loadProxyModes, guard);
+        const result = await executeCall(callState, request.tool, request.args, request.server, getPiTools, undefined, "script");
         assertRuntimeGuard(guard);
-        // Issue 2 fix: executeCall() resolves tool errors/denials as a
-        // NORMAL resolved value carrying details.error -- it does not
-        // reject for those outcomes (confirmed against proxy-modes.ts).
-        // ok: true must mean the call itself genuinely succeeded, not
-        // merely that the promise didn't throw, or a caller using `ok`
-        // to decide whether a write succeeded would proceed on a failed
-        // call.
-        const details = result.details as { error?: unknown } | undefined;
-        if (details && "error" in details && details.error !== undefined) {
-          const message = typeof details.error === "string" ? details.error : JSON.stringify(details.error);
-          return { ok: false, error: new Error(`MCP tool call failed: ${message}`) };
-        }
+        // Denials and tool errors resolve with details.error rather than rejecting.
+        const failure = (result.details as { error?: unknown } | undefined)?.error;
+        if (failure !== undefined) return { ok: false, error: new Error(`MCP tool call failed: ${String(failure)}`) };
         return { ok: true, result };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
@@ -1186,7 +1135,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    sessionEnded = false;
+    sessionCtx = null;
     const builtInMcpDetected = hasBuiltInMcpCommand(pi);
     if (!builtInMcpDetected && !mcpAliasRegistered) {
       registerMcpCommand("mcp");
@@ -1228,6 +1177,9 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     }
 
     if (generation !== lifecycleGeneration || !owner.isActive()) return;
+    // Recorded only after previous-session cleanup, so a runtime tool call cannot
+    // start initialization before session_start decides whether to defer it.
+    sessionCtx = ctx;
     if (state) return;
 
     if (!initPromise) {
@@ -1320,7 +1272,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
   });
 
   pi.on("session_shutdown", async () => {
-    sessionEnded = true;
+    sessionCtx = null;
     ++lifecycleGeneration;
     const currentState = state;
     const owner = currentOwner;
