@@ -222,19 +222,20 @@ describe("runtime MCP tool-call event", () => {
     );
   });
 
-  it("returns ok:false without calling executeCall() when no MCP session is active and none is starting", async () => {
+  it("returns ok:false without calling executeCall() when MCP initialization itself fails", async () => {
+    mocks.initializeMcp.mockRejectedValue(new Error("no mcp config found"));
     const { default: mcpAdapter, MCP_RUNTIME_TOOL_CALL_EVENT } = await import("../index.ts");
     const events = createEventBus();
     const { api } = createPi(events);
     mcpAdapter(api);
-    // Deliberately do not fire session_start, so no init has begun.
+    // Deliberately do not fire session_start; the event itself starts
+    // initialization (Issue 1 fix), and that initialization fails here.
 
     const request = { version: 1 as const, tool: "search" } as any;
     api.events.emit(MCP_RUNTIME_TOOL_CALL_EVENT, request);
 
     const settled = await request.result;
     expect(settled.ok).toBe(false);
-    expect((settled as { ok: false; error: Error }).error.message).toMatch(/requires an active MCP session/);
     expect(mocks.executeCall).not.toHaveBeenCalled();
   });
 
@@ -256,7 +257,7 @@ describe("runtime MCP tool-call event", () => {
     expect(mocks.executeCall).not.toHaveBeenCalled();
   });
 
-  it("returns ok:false, not a throw, when executeCall() itself rejects", async () => {
+  it("returns ok:false, not a throw, when executeCall() itself rejects (transport-level failure)", async () => {
     const state = createState();
     mocks.initializeMcp.mockResolvedValue(state);
     mocks.executeCall.mockRejectedValue(new Error("connection closed"));
@@ -272,6 +273,59 @@ describe("runtime MCP tool-call event", () => {
 
     const settled = await request.result;
     expect(settled).toMatchObject({ ok: false, error: { message: "connection closed" } });
+  });
+
+  it("returns ok:false, not ok:true, when executeCall() RESOLVES with details.error (the real failure shape -- denial, tool error, disabled server)", async () => {
+    // executeCall() does not reject for a denied approval or a tool-level
+    // error; it resolves normally with details.error set (Issue 2 from
+    // review). This is the shape a real failed call actually takes.
+    const state = createState();
+    mocks.initializeMcp.mockResolvedValue(state);
+    mocks.executeCall.mockResolvedValue({
+      content: [{ type: "text", text: "Tool call denied by approval policy" }],
+      details: { mode: "call", error: "approval_denied", server: "docs" },
+    });
+    const { default: mcpAdapter, MCP_RUNTIME_TOOL_CALL_EVENT } = await import("../index.ts");
+    const events = createEventBus();
+    const { api, handlers } = createPi(events);
+    mcpAdapter(api);
+    await handlers.get("session_start")?.({}, {});
+    await settle();
+
+    const request = { version: 1 as const, tool: "search" } as any;
+    api.events.emit(MCP_RUNTIME_TOOL_CALL_EVENT, request);
+
+    const settled = await request.result;
+    expect(settled.ok).toBe(false);
+    expect((settled as { ok: false; error: Error }).error.message).toMatch(/approval_denied/);
+  });
+
+  it("starts MCP initialization when neither state nor initPromise exist yet (deferred-init session, Issue 1 from review)", async () => {
+    // A session using valid cached metadata defers real MCP init until
+    // something needs it -- both state and initPromise are absent, exactly
+    // like the mcp proxy tool's own first call sees. The event must start
+    // initialization itself rather than refusing, since it has no
+    // ExtensionContext to hand to ensureSessionRuntime() the way a real
+    // tool call does.
+    const state = createState();
+    mocks.initializeMcp.mockResolvedValue(state);
+    mocks.executeCall.mockResolvedValue({ content: [], details: {} });
+    const { default: mcpAdapter, MCP_RUNTIME_TOOL_CALL_EVENT } = await import("../index.ts");
+    const events = createEventBus();
+    const { api } = createPi(events);
+    mcpAdapter(api);
+    // Deliberately do not fire session_start -- state and initPromise both
+    // start null/absent, simulating a deferred-init session.
+
+    const request = { version: 1 as const, tool: "search" } as any;
+    api.events.emit(MCP_RUNTIME_TOOL_CALL_EVENT, request);
+
+    const settled = await request.result;
+    expect(settled.ok).toBe(true);
+    expect(mocks.initializeMcp).toHaveBeenCalled();
+    expect(mocks.executeCall).toHaveBeenCalledWith(
+      state, "search", undefined, undefined, expect.any(Function), undefined, "script",
+    );
   });
 
   it("leaves a prefilled event result untouched (first listener wins)", async () => {

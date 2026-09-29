@@ -884,10 +884,31 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
     // No new call logic is introduced here.
     request.result = (async (): Promise<McpRuntimeToolCallResult> => {
       try {
-        if (!state && !initPromise) {
-          throw new Error("MCP runtime tool-call requires an active MCP session; none is initialized and none is starting");
-        }
+        // Issue 1 fix: a session with valid cached metadata defers real MCP
+        // initialization until something actually needs it -- state AND
+        // initPromise are both absent in that case, exactly like the model-
+        // facing mcp proxy tool sees on its own first call. That path starts
+        // initialization via ensureSessionRuntime(ctx). This event has no
+        // ExtensionContext to hand it (an event payload is not a tool call),
+        // so it builds the same minimal, ctx-shaped object
+        // startLoadTimeInitialization() already constructs for the load-time
+        // path a few lines up in this file, and calls the same
+        // startInitialization() this event's sibling code paths already use
+        // -- no new initialization logic, composing with what exists.
         let callState = state;
+        if (!callState && !initPromise) {
+          const owner = currentOwner?.isActive() ? currentOwner : createMcpRuntimeOwner();
+          if (owner !== currentOwner) currentOwner = owner;
+          const generation = currentOwner === owner && lifecycleGeneration > 0
+            ? lifecycleGeneration
+            : ++lifecycleGeneration;
+          startInitialization(
+            { mode: "print", hasUI: false, cwd: process.cwd(), model: undefined, modelRegistry: undefined, signal: undefined } as unknown as ExtensionContext,
+            owner,
+            generation,
+            "tool_call_event_initialization",
+          );
+        }
         if (!callState && initPromise) {
           const initialized = await awaitWithTimeout(initPromise, INIT_WAIT_TIMEOUT_MS);
           if (initialized === INIT_WAIT_TIMED_OUT) {
@@ -902,6 +923,18 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
         const proxyModes = await loadForRuntime(loadProxyModes, guard);
         const result = await proxyModes.executeCall(callState, request.tool, request.args, request.server, getPiTools, undefined, "script");
         assertRuntimeGuard(guard);
+        // Issue 2 fix: executeCall() resolves tool errors/denials as a
+        // NORMAL resolved value carrying details.error -- it does not
+        // reject for those outcomes (confirmed against proxy-modes.ts).
+        // ok: true must mean the call itself genuinely succeeded, not
+        // merely that the promise didn't throw, or a caller using `ok`
+        // to decide whether a write succeeded would proceed on a failed
+        // call.
+        const details = result.details as { error?: unknown } | undefined;
+        if (details && "error" in details && details.error !== undefined) {
+          const message = typeof details.error === "string" ? details.error : JSON.stringify(details.error);
+          return { ok: false, error: new Error(`MCP tool call failed: ${message}`) };
+        }
         return { ok: true, result };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
